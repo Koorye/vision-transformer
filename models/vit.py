@@ -1,11 +1,53 @@
-from typing import OrderedDict
+import math
 import torch
 from functools import partial
 from torch import nn
+from torch.nn.init import trunc_normal_, _calculate_fan_in_and_fan_out
+from typing import OrderedDict
 
 from models.patch_embed import PatchEmbed
 from models.encoder_block import EncoderBlock
 
+def variance_scaling_(tensor, scale=1.0, mode='fan_in', distribution='normal'):
+    fan_in, fan_out = _calculate_fan_in_and_fan_out(tensor)
+    if mode == 'fan_in':
+        denom = fan_in
+    elif mode == 'fan_out':
+        denom = fan_out
+    elif mode == 'fan_avg':
+        denom = (fan_in + fan_out) / 2
+
+    variance = scale / denom
+
+    if distribution == "truncated_normal":
+        # constant is stddev of standard normal truncated to (-2, 2)
+        trunc_normal_(tensor, std=math.sqrt(variance) / .87962566103423978)
+    elif distribution == "normal":
+        tensor.normal_(std=math.sqrt(variance))
+    elif distribution == "uniform":
+        bound = math.sqrt(3 * variance)
+        tensor.uniform_(-bound, bound)
+    else:
+        raise ValueError(f"invalid distribution {distribution}")
+
+def lecun_normal_(tensor):
+    variance_scaling_(tensor, mode='fan_in', distribution='truncated_normal')
+
+def init_vit_weights(module, name='', head_bias=0.):
+    if isinstance(module, nn.Linear):
+        if name.startswith('head'):
+            nn.init.zeros_(module.weight)
+            nn.init.constant_(module.bias, head_bias)
+        elif name.startswith('pre_logits'):
+            lecun_normal_(module.weight)
+            nn.init.zeros_(module.bias)
+        else:
+            trunc_normal_(module.weight, std=.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+    elif isinstance(module, (nn.LayerNorm, nn.GroupNorm, nn.BatchNorm2d)):
+        nn.init.zeros_(module.bias)
+        nn.init.ones_(module.weight)
 
 class VisionTransformer(nn.Module):
     def __init__(self,
@@ -66,7 +108,8 @@ class VisionTransformer(nn.Module):
         # 初始化参数
         nn.init.trunc_normal_(self.pos_embed, std=.02)
         nn.init.trunc_normal_(self.cls_token, std=.02)
-        # self.apply(_init_vit_weights)
+
+        self.apply(init_vit_weights)
 
     def forward(self, x):
         x = self.patch_embed(x)
